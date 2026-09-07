@@ -23,6 +23,7 @@ import { assistantBlockKey } from './streamPromotion.js'
 import { copyAssistantSelection } from './markdownClipboard.js'
 import { goalMessageObjectiveFromText } from './goalProgress.js'
 import GoalHistoryCard from './GoalHistoryCard.jsx'
+import WaitHistoryCard from './WaitHistoryCard.jsx'
 
 
 // Answerability is purely a function of the block + its position + live hint.
@@ -86,6 +87,13 @@ function GoalHistory({ msg }) {
   if (msg.role !== 'assistant' || !Array.isArray(msg.goal_summaries)) return null
   return msg.goal_summaries.map(summary => (
     <GoalHistoryCard key={summary.id} summary={summary} />
+  ))
+}
+
+function WaitHistory({ msg }) {
+  if (msg.role !== 'assistant' || !Array.isArray(msg.wait_summaries)) return null
+  return msg.wait_summaries.map(summary => (
+    <WaitHistoryCard key={summary.id} summary={summary} />
   ))
 }
 
@@ -355,9 +363,9 @@ function MsgContentInner({
         // scrolled-back history and live provider errors never show a Resume
         // button. One tap opens a provider continuation turn and persists a
         // product marker rather than attributing the internal prompt to the
-        // owner. A provider-limit park never offers a retry before its reset:
-        // it enables automatic continuation instead, then exposes Continue
-        // only when the deadline has actually elapsed (design §2.4).
+        // owner. Automatic continuation follows the advertised reset. A
+        // deliberate manual retry remains available because purchased credits
+        // or an applied account reset can restore usage sooner.
         const recoveryOwner = ownsRecoveryAction({
           block,
           entryIndex: i,
@@ -369,9 +377,7 @@ function MsgContentInner({
         const resourceWait = isResourcePause(block)
         const parked = !!block.pause?.resets_at && !resourceWait
         const automaticContinuation = recoveryOwner && parked && !!autoResumeEnabled
-        const manualResumeAvailable = recoveryOwner && !resourceWait && (
-          !parked || (!!limitResetElapsed && !autoResumeEnabled)
-        )
+        const manualResumeAvailable = recoveryOwner && !resourceWait
         return (
           <ErrorCard
             key={assistantBlockKey(block, i)}
@@ -417,7 +423,9 @@ function MsgContentInner({
                   ? 'Wait for the provider switch to finish.'
                   : undefined}
               >
-                {parked ? 'Continue now' : 'Resume'}
+                {parked
+                  ? limitResetElapsed ? 'Continue now' : 'Try now'
+                  : 'Resume'}
               </button>
             )}
           </ErrorCard>
@@ -479,6 +487,7 @@ function MsgContentInner({
           />
         )}
         {!isStreaming && <GoalHistory msg={msg} />}
+        {!isStreaming && <WaitHistory msg={msg} />}
       </AssistantCopySurface>
     )
   }
@@ -512,6 +521,7 @@ function MsgContentInner({
         </div>
       ) : null}
       {!isStreaming && <GoalHistory msg={msg} />}
+      {!isStreaming && <WaitHistory msg={msg} />}
     </AssistantCopySurface>
   )
 }

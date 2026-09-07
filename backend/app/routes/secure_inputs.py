@@ -10,8 +10,14 @@ from sqlalchemy.orm import Session
 from app import models, secure_inputs
 from app.broadcast import get_broadcast
 from app.database import get_db
-from app.deps import get_current_owner, reject_cross_site
-from app.deps import Principal, get_agent_run_principal
+from app.deps import (
+  Principal,
+  get_agent_run_principal,
+  get_current_owner,
+  get_current_owner_for_lifecycle_control,
+  get_current_owner_for_owner_input,
+  reject_cross_site,
+)
 
 
 router = APIRouter(prefix="/api/secure-inputs", tags=["secure-inputs"])
@@ -106,7 +112,7 @@ def _authorized_request(request_id: str, capability: Any):
 async def create_secure_input(
   chat_id: str,
   request: Request,
-  _: models.Owner = Depends(get_current_owner),
+  _: models.Owner = Depends(get_current_owner_for_lifecycle_control),
   db: Session = Depends(get_db),
 ):
   """Create a bounded card for a running owner chat."""
@@ -160,7 +166,7 @@ async def submit_secure_input(
   chat_id: str,
   request_id: str,
   request: Request,
-  _: models.Owner = Depends(get_current_owner),
+  _: models.Owner = Depends(get_current_owner_for_owner_input),
   db: Session = Depends(get_db),
 ):
   """Move submitted fields into process memory without logging or persistence."""
@@ -237,7 +243,7 @@ async def submit_secure_input(
 async def cancel_secure_input_by_owner(
   chat_id: str,
   request_id: str,
-  _: models.Owner = Depends(get_current_owner),
+  _: models.Owner = Depends(get_current_owner_for_owner_input),
   db: Session = Depends(get_db),
 ):
   """Let the owner dismiss their own open card without the helper's capability.

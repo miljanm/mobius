@@ -188,10 +188,17 @@ def test_goal_routing_rechecks_phase_transitions_and_prefers_platform_tool():
   planning_normalized = " ".join(planning.split())
 
   assert "Before the first material tool call" in core_normalized
-  assert "labels such as “synthetic,” “fixture,” or “test”" in core_normalized
-  assert "after an owner choice resolves" in core_normalized
-  assert "not merely at the next user message" in core_normalized
-  assert "`promote_goal` tool when available" in core_normalized
+  assert "read the complete `goal-planning` skill" in core_normalized
+  assert "planning, parallel-execution, handoff, and completion loop" in core_normalized
+  assert "## The execution loop — read this first" in planning
+  assert "This read is a serial gate" in planning_normalized
+  assert "Do not run them concurrently" in planning_normalized
+  assert len(planning.encode("utf-8")) < 4_000
+  assert "A Goal is durable intent, not an executor" in planning_normalized
+  assert "Inspect ready leaves" in planning_normalized
+  assert "Goal-plan revisions, and the final integrator" in planning_normalized
+  assert "Delegated children return future conditions" in planning_normalized
+  assert "goal_plan.py check-complete" in planning_normalized
   assert "### Recheck when the work changes phase" in planning
   assert "before the first material action" in planning_normalized
   assert "for **every** ordinary top-level delegated outcome" in planning_normalized
@@ -224,7 +231,8 @@ def test_goal_waits_always_name_a_durable_owner_interaction():
   assert "create exactly one owning interaction" in planning_normalized
   assert "keeps the Goal marked **Waiting for you**" in planning_normalized
   assert "Do not end with “tell me when…”" in planning_normalized
-  assert "Every wait must have one visible owner" in waiting_normalized
+  assert "durable owner holds it" in waiting_normalized
+  assert "`--owner` is required for command waits" in waiting_normalized
   assert "exit **0 exactly when the condition is met**" in waiting_normalized
   assert "A wait declared inside a Goal resumes under the same Goal" in waiting_normalized
 
