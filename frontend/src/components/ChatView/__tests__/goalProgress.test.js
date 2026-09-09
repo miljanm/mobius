@@ -571,8 +571,11 @@ test('the goal rail confirms and clears directly, sourced domain-neutrally', () 
     'the armed clear control must turn into a confirm check')
   assert.match(progressRail, /item\.clearConfirmLabel \|\| 'Confirm clear'/,
     'the confirmation label must be item-supplied with a neutral fallback')
-  assert.match(chatView, /actionLabel: resumeState\.pending \? 'Resuming…' : 'Resume'/,
-    'a paused Goal should expose the one-tap resume action')
+  assert.match(
+    chatView,
+    /actionLabel: resumeState\.pending \? 'Resuming…' : resumeState\.unavailable \? 'Reconnecting…' : 'Resume'/,
+    'a paused Goal should expose Resume only after its run identity is durable',
+  )
   assert.match(chatView, /actionIcon: <Play width=\{13\} height=\{13\}/,
     'the paused Goal action should spend only icon-sized visual space')
   assert.match(chatView, /ownerActionRequired: goalPresentation\?\.wait_kind === 'owner_question'/,

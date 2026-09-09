@@ -106,7 +106,9 @@ test('provider switch or already running turn prevents Resume without changing s
   const h = fixture(() => { sent = true }, { blocked: () => true })
   assert.equal(await h.result.current.resume(), false)
   assert.equal(sent, false)
-  assert.deepEqual(h.result.current.state, { pending: false, error: '' })
+  assert.deepEqual(h.result.current.state, {
+    pending: false, error: '', unavailable: false,
+  })
 })
 
 
