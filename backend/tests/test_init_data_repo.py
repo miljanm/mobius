@@ -66,6 +66,7 @@ def test_fresh_boot_tracks_owner_data_but_never_runtime_repositories(tmp_path):
   owned_repositories = (
     tmp_path / "run" / "job",
     tmp_path / "agent-scratch" / "chat" / "candidate",
+    tmp_path / "worktrees" / "scratch",
     tmp_path / "contrib" / "review" / "worktree",
     tmp_path / "contributions" / "legacy" / "worktree",
   )
@@ -81,7 +82,7 @@ def test_fresh_boot_tracks_owner_data_but_never_runtime_repositories(tmp_path):
   tracked = set(_git(tmp_path, "ls-files").splitlines())
   assert {".gitignore", "owner.txt"}.issubset(tracked)
   assert not any(
-    path.startswith(("run/", "agent-scratch/", "contrib/", "contributions/"))
+    path.startswith(("run/", "agent-scratch/", "worktrees/", "contrib/", "contributions/"))
     for path in tracked
   )
   for repo in owned_repositories:
@@ -102,6 +103,7 @@ def test_upgrade_untracks_every_root_policy_match_without_deleting_files(
   historical_repositories = (
     tmp_path / "run" / "stale",
     tmp_path / "agent-scratch" / "chat" / "candidate",
+    tmp_path / "worktrees" / "scratch",
     tmp_path / "contrib" / "review" / "worktree",
     tmp_path / "contributions" / "legacy" / "worktree",
   )
@@ -116,6 +118,7 @@ def test_upgrade_untracks_every_root_policy_match_without_deleting_files(
     ".pm-commit",
     "run",
     "agent-scratch",
+    "worktrees",
     "contrib",
     "contributions",
   )
@@ -157,7 +160,7 @@ def test_upgrade_untracks_every_root_policy_match_without_deleting_files(
   assert "apps/demo/generated.txt" in tracked
   assert "unrelated.txt" in tracked
   assert not any(
-    path.startswith(("run/", "agent-scratch/", "contrib/", "contributions/"))
+    path.startswith(("run/", "agent-scratch/", "worktrees/", "contrib/", "contributions/"))
     for path in tracked
   )
 

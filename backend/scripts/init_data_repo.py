@@ -53,6 +53,7 @@ cron-logs/
 # Runtime workspaces own both their contents and their cleanup.
 /run/
 /agent-scratch/
+/worktrees/
 # Contribution records point at these durable repositories. Their own Git
 # history is authoritative; recording them here as gitlinks is both redundant
 # and unsafe when a linked worktree is later retired.
