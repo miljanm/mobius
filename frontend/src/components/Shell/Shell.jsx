@@ -64,6 +64,7 @@ import {
   appSourceProject,
   appSourceProjectId,
   linkedProjectAppId,
+  parseAppSourceProjectId,
 } from '../../lib/appSourceProject.js'
 import { projectSourceAction } from '../../lib/projectSourceAction.js'
 import { immersiveReducer, isImmersiveActive } from '../../lib/immersive.js'
@@ -592,6 +593,7 @@ export default function Shell({ onInitialVisualReady }) {
     const projectId = String(activeProjectId)
     if (!projectId || recencyMarkedProjectRef.current === projectId) return
     recencyMarkedProjectRef.current = projectId
+    if (parseAppSourceProjectId(projectId)) return
 
     // Projects join the exact same Recents contract as apps: focused opening
     // promotes locally first, then a tiny navigation-state write makes it
