@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  bankedResetCredits,
   providerAllowance,
   providerAllowanceSummary,
 } from '../../components/SettingsView/providerUsage.js'
@@ -16,10 +17,16 @@ test('plan providers follow typed weekly meaning, not display labels or other li
       { kind: 'other', label: 'Extra usage', used_percent: 75 },
     ],
   }), {
-    kind: 'weekly', label: 'Weekly usage', usedPercent: 58, expiresAt: null,
+    kind: 'weekly',
+    label: 'Weekly usage',
+    usedPercent: 58,
+    expiresAt: null,
   })
   assert.deepEqual(providerAllowance('claude', { state: 'ready', windows: [] }), {
-    kind: 'weekly', label: 'Weekly usage', usedPercent: null, expiresAt: null,
+    kind: 'weekly',
+    label: 'Weekly usage',
+    usedPercent: null,
+    expiresAt: null,
   })
 })
 
@@ -30,15 +37,22 @@ test('Möbius follows typed API-credit usage instead of weekly windows', () => {
       { kind: 'weekly', used_percent: 80 },
       {
         kind: 'api_credits',
-        used_percent: 2.5,
+        used_percent: 0,
+        remaining_percent: 99.98,
         expires_at: '2026-09-07T19:40:34.682998+00:00',
       },
     ],
   }), {
     kind: 'api_credits',
     label: 'API credits usage',
-    usedPercent: 2.5,
+    usedPercent: 0,
     expiresAt: '2026-09-07T19:40:34.682998+00:00',
+  })
+  assert.deepEqual(providerAllowance('mobius', { state: 'unavailable' }), {
+    kind: 'api_credits',
+    label: 'API credits usage',
+    usedPercent: null,
+    expiresAt: null,
   })
 })
 
@@ -68,4 +82,13 @@ test('plan allowance copy identifies a recent fallback reading', () => {
     providerAllowanceSummary('claude', allowance),
     '24% weekly usage · last available',
   )
+})
+
+test('banked reset count preserves an explicit zero while rejecting missing data', () => {
+  assert.deepEqual(bankedResetCredits({ reset_credits: { available_count: 0, credits: [] } }), {
+    availableCount: 0,
+    credits: [],
+  })
+  assert.deepEqual(bankedResetCredits({}), { availableCount: 0, credits: [] })
+  assert.equal(bankedResetCredits(null), null)
 })

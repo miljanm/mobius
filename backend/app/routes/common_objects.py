@@ -50,51 +50,88 @@ matches its own slug — an app cannot reach another app's shared state.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import re
 import secrets as pysecrets
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from weakref import WeakValueDictionary
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
-from app import models, push
+from app import models
+from app.common_protocol import (
+  CLOCK_SKEW_S,
+  OUTBOUND_TIMEOUT_S,
+  peer_base_url as _peer_base_url,
+  sign as _sign,
+  valid_host as _valid_host,
+)
+from app.common_public import CommonPublicStore
+from app.common_transport import federation_request
 from app.config import get_settings
 from app.database import get_db
 from app.deps import Principal, get_principal, require_nondelegated_owner_control
 from app.storage_io import atomic_write, read_capped_body
 from app.routes.common import (
-  CLOCK_SKEW_S,
-  OUTBOUND_TIMEOUT_S,
-  PROTOCOL,
   _load_identity,
   _own_host,
-  _peer_base_url,
-  _sign,
-  _valid_host,
   _verify_peer_envelope,
 )
+
+_public_store = CommonPublicStore(lambda: get_settings().data_dir)
 
 router = APIRouter(prefix="/api/common/objects", tags=["common-objects"])
 
 MAX_DOC_BYTES = 256 * 1024
 MAX_ENVELOPE_BYTES = MAX_DOC_BYTES + 8 * 1024
+MAX_ASSET_BYTES = 5 * 1024 * 1024
+MAX_ASSET_ENVELOPE_BYTES = 4 * ((MAX_ASSET_BYTES + 2) // 3) + 16 * 1024
+MAX_ASSETS_PER_OBJECT = 100
+MAX_ASSET_TOTAL_BYTES = 100 * 1024 * 1024
 MAX_KIND_CHARS = 40
 MAX_LABEL_CHARS = 120
+MAX_RECEIVED_INVITATIONS = 1000
+MAX_SENDER_INVITATIONS = 50
+_invitation_limiter = Limiter(key_func=get_remote_address)
+
 INVITE_TTL_S = 7 * 24 * 3600
 PRESENCE_TTL_S = 12
 PRESENCE_RETENTION_S = 5 * 60
 ROLES = ("editor", "viewer")
 
 _OID_RE = re.compile(r"^[a-f0-9]{32}$")
+_ASSET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _APP_SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62})$")
+_ASSET_EXT = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/json": "json",
+  "application/zip": "zip",
+  "application/msword": "doc",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/octet-stream": "bin",
+}
 _INVITE_RE = re.compile(
   r"^(?P<oid>[a-f0-9]{32})@(?P<host>[a-z0-9]([a-z0-9.-]{0,250})(:\d{1,5})?)"
   r"#(?P<secret>[A-Za-z0-9_-]{16,64})$"
@@ -189,6 +226,80 @@ def _encode_doc(doc) -> bytes:
   return encoded
 
 
+def _decode_asset(mime: object, encoded: object) -> tuple[str, bytes]:
+  if mime not in _ASSET_EXT or not isinstance(encoded, str):
+    raise HTTPException(status_code=400, detail="Attachment type is not supported.")
+  if len(encoded) > 4 * ((MAX_ASSET_BYTES + 2) // 3):
+    raise HTTPException(status_code=413, detail="Attachment is too large.")
+  try:
+    data = base64.b64decode(encoded, validate=True)
+  except (binascii.Error, ValueError) as exc:
+    raise HTTPException(status_code=400, detail="Attachment data is invalid.") from exc
+  if not data:
+    raise HTTPException(status_code=400, detail="Attachment is empty.")
+  if len(data) > MAX_ASSET_BYTES:
+    raise HTTPException(status_code=413, detail="Attachment is too large.")
+  return mime, data
+
+
+def _asset_path(oid: str, asset_id: str, mime: str) -> Path:
+  return _hosted_dir(oid) / "assets" / f"{asset_id}.{_ASSET_EXT[mime]}"
+
+
+def _find_asset(oid: str, asset_id: str) -> tuple[Path, str] | None:
+  assets = _hosted_dir(oid) / "assets"
+  for mime, ext in _ASSET_EXT.items():
+    path = assets / f"{asset_id}.{ext}"
+    if path.is_file():
+      return path, mime
+  return None
+
+
+def _store_asset(oid: str, asset_id: str, mime: str, data: bytes) -> None:
+  existing = _find_asset(oid, asset_id)
+  if existing:
+    path, existing_mime = existing
+    if existing_mime == mime and path.read_bytes() == data:
+      return
+    raise HTTPException(status_code=409, detail="Attachment id already exists.")
+  assets = _hosted_dir(oid) / "assets"
+  stored = [path for path in assets.iterdir() if path.is_file()] if assets.is_dir() else []
+  if len(stored) >= MAX_ASSETS_PER_OBJECT:
+    raise HTTPException(status_code=413, detail="This shared object has too many attachments.")
+  total = sum(path.stat().st_size for path in stored)
+  if total + len(data) > MAX_ASSET_TOTAL_BYTES:
+    raise HTTPException(status_code=413, detail="This shared object's attachment storage is full.")
+  atomic_write(_asset_path(oid, asset_id, mime), data)
+
+
+def _asset_payload(oid: str, asset_id: str) -> dict:
+  existing = _find_asset(oid, asset_id)
+  if existing is None:
+    raise HTTPException(status_code=404, detail="No such attachment.")
+  path, mime = existing
+  data = path.read_bytes()
+  if len(data) > MAX_ASSET_BYTES:
+    raise HTTPException(status_code=413, detail="Attachment is too large.")
+  return {
+    "id": asset_id,
+    "mime": mime,
+    "size": len(data),
+    "data": base64.b64encode(data).decode(),
+  }
+
+
+def _delete_asset(oid: str, asset_id: str) -> None:
+  existing = _find_asset(oid, asset_id)
+  if existing is None:
+    return
+  path, _mime = existing
+  path.unlink(missing_ok=True)
+  try:
+    path.parent.rmdir()
+  except OSError:
+    pass
+
+
 def _hash_secret(secret: str) -> str:
   return hashlib.sha256(secret.encode()).hexdigest()
 
@@ -266,8 +377,8 @@ def _save_remote(record: dict) -> None:
 
 # ── peer surface ────────────────────────────────────────────────────────────
 
-async def _read_object_envelope(request: Request) -> dict:
-  body = await read_capped_body(request, MAX_ENVELOPE_BYTES)
+async def _read_object_envelope(request: Request, max_bytes: int = MAX_ENVELOPE_BYTES) -> dict:
+  body = await read_capped_body(request, max_bytes)
   try:
     envelope = json.loads(body)
   except Exception as exc:
@@ -284,6 +395,39 @@ async def _read_object_envelope(request: Request) -> dict:
 def _member_role(obj: dict, host: str) -> str | None:
   member = (obj.get("members") or {}).get(host)
   return member.get("role") if member else None
+
+
+@router.post("/{oid}/peer-asset/{asset_id}")
+async def peer_asset_operation(oid: str, asset_id: str, request: Request):
+  """Read, create, or delete one bounded image owned by a shared object."""
+  if not _OID_RE.fullmatch(oid) or not _ASSET_ID_RE.fullmatch(asset_id):
+    raise HTTPException(status_code=404, detail="No such image attachment.")
+  envelope = await _read_object_envelope(request, MAX_ASSET_ENVELOPE_BYTES)
+  kind = envelope.get("type")
+  if kind not in ("object_asset_read", "object_asset_write", "object_asset_delete"):
+    raise HTTPException(status_code=400, detail="Unsupported envelope type.")
+  await _verify_peer_envelope(envelope)
+  sender = envelope["from"]
+  async with _object_lock(oid):
+    obj = _load_object(oid)
+    if obj is None:
+      raise HTTPException(status_code=404, detail="No such object.")
+    role = _member_role(obj, sender)
+    if role is None:
+      raise HTTPException(status_code=403, detail="Not a member of this object.")
+    if kind == "object_asset_read":
+      _mark_present(oid, sender)
+      return {"status": "ok", "asset": _asset_payload(oid, asset_id)}
+    if role != "editor":
+      raise HTTPException(status_code=403, detail="Viewers cannot change attachments.")
+    if kind == "object_asset_write":
+      mime, data = _decode_asset(envelope.get("mime"), envelope.get("data"))
+      _store_asset(oid, asset_id, mime, data)
+      _mark_present(oid, sender)
+      return {"status": "ok", "size": len(data)}
+    _delete_asset(oid, asset_id)
+    _mark_present(oid, sender)
+    return {"status": "deleted"}
 
 
 @router.post("/{oid}/peer")
@@ -380,7 +524,7 @@ async def peer_operation(oid: str, request: Request):
 # A handle invitation authorizes a member by WHO THEY ARE instead of by a
 # code they carry: the host adds the invitee's instance as a pending member
 # and delivers a signed invitation envelope to that instance, which stores it
-# and notifies its owner. Accepting is an ordinary join — no secret needed,
+# as a quiet request. Accepting is an ordinary join — no secret needed,
 # because the sender's verified signature is the credential.
 
 def _invitations_dir() -> Path:
@@ -428,27 +572,28 @@ async def _resolve_invitees(address: str, db: Session, owner_id: int) -> InviteR
     )
 
   # Unlinked local owners retain the opt-in Common directory fallback.
-  from app.routes.common import _load_identity as _ident, _directory_path
+  from app.routes.common import _load_identity as _ident
   identity = _ident()
   community = identity.get("community_host") or _own_host()
   entries = {}
   if community == _own_host():
-    path = _directory_path()
-    if path.is_file():
-      entries = json.loads(path.read_text())
+    entries = {
+      user["host"]: user
+      for user in _public_store.search_directory(raw)["users"]
+    }
   else:
     try:
-      async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-        response = await client.get(
-          f"{_peer_base_url(community)}/api/common/directory", params={"q": raw}
-        )
-        response.raise_for_status()
-        entries = {
-          u["host"]: u for u in response.json().get("users", []) if u.get("host")
-        }
+      response = await federation_request(
+        "GET", f"{_peer_base_url(community)}/api/common/directory",
+        params={"q": raw}, timeout_seconds=OUTBOUND_TIMEOUT_S,
+      )
+      response.raise_for_status()
+      entries = {
+        u["host"]: u for u in response.json().get("users", []) if u.get("host")
+      }
     except Exception as exc:
       raise HTTPException(
-        status_code=502, detail=f"The directory at {community} could not be reached."
+        status_code=502, detail="The directory could not be reached."
       ) from exc
   matches = [
     host for host, entry in entries.items()
@@ -468,7 +613,8 @@ async def _resolve_invitees(address: str, db: Session, owner_id: int) -> InviteR
 
 
 @router.post("/invitations/deliver")
-async def receive_invitation(request: Request, db: Session = Depends(get_db)):
+@_invitation_limiter.limit("30/minute")
+async def receive_invitation(request: Request):
   """Accept one signed board/object invitation from the hosting instance."""
   envelope = await _read_object_envelope(request)
   if envelope.get("type") != "object_invitation":
@@ -488,25 +634,33 @@ async def receive_invitation(request: Request, db: Session = Depends(get_db)):
     "from_name": str(actor.get("name") or "")[:MAX_LABEL_CHARS],
     "received_at": time.time(),
   }
-  atomic_write(_invitation_path(sender, meta["id"]), json.dumps(invitation, indent=2))
-  owner = db.query(models.Owner).first()
-  if owner is not None:
-    app_row = (
-      db.query(models.App).filter(models.App.slug == invitation["app"]).first()
-      if invitation["app"] else None
-    )
-    try:
-      push.notify_owner(
-        db,
-        owner.id,
-        title=f"{invitation['from_name'] or sender} invited you",
-        body=invitation["label"] or f"A shared {invitation['kind'] or 'item'}",
-        source_type="app" if app_row else "agent",
-        source_id=str(app_row.id) if app_row else None,
-        target=f"/shell/?app={app_row.id}" if app_row else "/",
-      )
-    except Exception:
-      pass  # storing the invitation must not fail on push problems
+  # No await between admission and write: the single-worker event loop owns
+  # this transaction. Retries cannot refresh requests or undo a decline.
+  path = _invitation_path(sender, meta["id"])
+  previous = json.loads(path.read_text()) if path.is_file() else None
+  if _load_remote(sender, meta["id"]):
+    return {"status": "delivered"}
+  if previous and (
+    previous.get("status", "pending") == "pending"
+    or envelope["sent_at"] <= previous.get("sent_at", 0)
+  ):
+    return {"status": "delivered"}
+  if previous is None:
+    records = []
+    sender_count = 0
+    for record in _invitations_dir().glob("*.json"):
+      stored = json.loads(record.read_text())
+      # Only tombstones expire; pending requests and existing history remain.
+      if (stored.get("status") == "declined"
+          and stored.get("declined_at", time.time()) + 2 * CLOCK_SKEW_S < time.time()):
+        record.unlink()
+        continue
+      records.append(record)
+      sender_count += stored.get("host") == sender
+    if len(records) >= MAX_RECEIVED_INVITATIONS or sender_count >= MAX_SENDER_INVITATIONS:
+      raise HTTPException(status_code=429, detail="Invitation requests are full.")
+  invitation.update(status="pending", sent_at=envelope["sent_at"])
+  atomic_write(path, json.dumps(invitation, indent=2))
   return {"status": "delivered"}
 
 
@@ -523,6 +677,8 @@ def list_invitations(
     try:
       inv = json.loads(record.read_text())
     except Exception:
+      continue
+    if inv.get("status", "pending") != "pending":
       continue
     if wanted and inv.get("app") != wanted:
       continue
@@ -544,6 +700,10 @@ async def decline_invitation(
     raise HTTPException(status_code=404, detail="No such invitation.")
   inv = json.loads(path.read_text())
   _require_app_match(caller, inv.get("app") or "")
+  # Preserve the signed timestamp so redelivery cannot resurrect this request.
+  inv["status"] = "declined"
+  inv["declined_at"] = time.time()
+  atomic_write(path, json.dumps(inv, indent=2))
   identity = _load_identity()
   envelope = {
     "v": 0,
@@ -554,13 +714,13 @@ async def decline_invitation(
   }
   envelope["sig"] = _sign(envelope, identity["private_key_b64"])
   try:
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      await client.post(
-        f"{_peer_base_url(host)}/api/common/objects/{oid}/peer", json=envelope
-      )
+    await federation_request(
+      "POST", f"{_peer_base_url(host)}/api/common/objects/{oid}/peer",
+      json=envelope, max_response_bytes=MAX_ENVELOPE_BYTES,
+      timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
   except Exception:
     pass  # the host prunes the pending member on next contact
-  path.unlink(missing_ok=True)
   return {"status": "declined"}
 
 
@@ -590,6 +750,11 @@ class CreateInvite(BaseModel):
 class WriteState(BaseModel):
   doc: dict | list
   expected_version: int
+
+
+class WriteAsset(BaseModel):
+  mime: str
+  data: str
 
 
 @router.post("")
@@ -699,21 +864,16 @@ async def join_object(
   }
   envelope["sig"] = _sign(envelope, identity["private_key_b64"])
   try:
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      response = await client.post(
-        f"{_peer_base_url(host)}/api/common/objects/{oid}/peer", json=envelope
-      )
+    response = await federation_request(
+      "POST", f"{_peer_base_url(host)}/api/common/objects/{oid}/peer",
+      json=envelope, timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
   except Exception as exc:
     raise HTTPException(
-      status_code=502, detail=f"{host} could not be reached."
+      status_code=502, detail="The object host could not be reached."
     ) from exc
   if response.status_code != 200:
-    detail = "Join was refused."
-    try:
-      detail = response.json().get("detail") or detail
-    except Exception:
-      pass
-    raise HTTPException(status_code=response.status_code, detail=detail)
+    raise HTTPException(status_code=response.status_code, detail="Join was refused.")
   joined = response.json()
   remote_object = joined.get("object") or {}
   if remote_object.get("app") != body.app:
@@ -800,24 +960,25 @@ async def create_invite(
       public_members = _public_object(obj)["members"]
     identity = _load_identity()
     limit = asyncio.Semaphore(4)
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      async def deliver(peer):
-        async with limit:
-          envelope = {
-            "v": 0, "type": "object_invitation", "from": _own_host(),
-            "to": peer, "object": meta, "sent_at": time.time(),
-          }
-          envelope["sig"] = _sign(envelope, identity["private_key_b64"])
-          try:
-            response = await client.post(
-              f"{_peer_base_url(peer)}/api/common/objects/invitations/deliver",
-              json=envelope,
-            )
-            response.raise_for_status()
-          except httpx.HTTPError:
-            return {"host": peer, "delivery": "unreachable"}
-          return {"host": peer, "delivery": "delivered"}
-      deliveries = await asyncio.gather(*(deliver(peer) for peer in pending_hosts))
+    async def deliver(peer):
+      async with limit:
+        envelope = {
+          "v": 0, "type": "object_invitation", "from": _own_host(),
+          "to": peer, "object": meta, "sent_at": time.time(),
+        }
+        envelope["sig"] = _sign(envelope, identity["private_key_b64"])
+        try:
+          response = await federation_request(
+            "POST",
+            f"{_peer_base_url(peer)}/api/common/objects/invitations/deliver",
+            json=envelope, max_response_bytes=MAX_ENVELOPE_BYTES,
+            timeout_seconds=OUTBOUND_TIMEOUT_S,
+          )
+          response.raise_for_status()
+        except Exception:
+          return {"host": peer, "delivery": "unreachable"}
+        return {"host": peer, "delivery": "delivered"}
+    deliveries = await asyncio.gather(*(deliver(peer) for peer in pending_hosts))
     delivered = sum(d["delivery"] == "delivered" for d in deliveries)
     delivery = "delivered" if delivered == len(deliveries) else "partial" if delivered else "unreachable"
     return {
@@ -913,6 +1074,7 @@ async def delete_object(
       raise HTTPException(status_code=404, detail="No such object.")
     _require_app_match(caller, obj["app"])
     d = _hosted_dir(oid)
+    shutil.rmtree(d / "assets", ignore_errors=True)
     for name in ("object.json", "doc.json"):
       (d / name).unlink(missing_ok=True)
     if d.is_dir():
@@ -948,10 +1110,11 @@ async def leave_object(
   }
   envelope["sig"] = _sign(envelope, identity["private_key_b64"])
   try:
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      await client.post(
-        f"{_peer_base_url(host)}/api/common/objects/{oid}/peer", json=envelope
-      )
+    await federation_request(
+      "POST", f"{_peer_base_url(host)}/api/common/objects/{oid}/peer",
+      json=envelope, max_response_bytes=MAX_ENVELOPE_BYTES,
+      timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
   except Exception:
     pass  # local leave still succeeds; the host prunes on next contact
   _remote_path(host, oid).unlink(missing_ok=True)
@@ -970,21 +1133,18 @@ async def _proxied_state(host: str, oid: str, since_version: int) -> dict:
   }
   envelope["sig"] = _sign(envelope, identity["private_key_b64"])
   try:
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      response = await client.post(
-        f"{_peer_base_url(host)}/api/common/objects/{oid}/peer", json=envelope
-      )
+    response = await federation_request(
+      "POST", f"{_peer_base_url(host)}/api/common/objects/{oid}/peer",
+      json=envelope, timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
   except Exception as exc:
     raise HTTPException(
-      status_code=502, detail=f"{host} could not be reached."
+      status_code=502, detail="The object host could not be reached."
     ) from exc
   if response.status_code != 200:
-    detail = "The host refused the request."
-    try:
-      detail = response.json().get("detail") or detail
-    except Exception:
-      pass
-    raise HTTPException(status_code=response.status_code, detail=detail)
+    raise HTTPException(
+      status_code=response.status_code, detail="The host refused the request."
+    )
   return response.json()
 
 
@@ -1065,19 +1225,149 @@ async def write_state(
   }
   envelope["sig"] = _sign(envelope, identity["private_key_b64"])
   try:
-    async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT_S) as client:
-      response = await client.post(
-        f"{_peer_base_url(host)}/api/common/objects/{oid}/peer", json=envelope
-      )
+    response = await federation_request(
+      "POST", f"{_peer_base_url(host)}/api/common/objects/{oid}/peer",
+      json=envelope, timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
   except Exception as exc:
     raise HTTPException(
-      status_code=502, detail=f"{host} could not be reached."
+      status_code=502, detail="The object host could not be reached."
     ) from exc
   if response.status_code != 200:
-    detail = "The host refused the write."
+    raise HTTPException(
+      status_code=response.status_code, detail="The host refused the write."
+    )
+  return response.json()
+
+
+def _asset_access(
+  host: str,
+  oid: str,
+  caller: str | None,
+  *,
+  write: bool = False,
+) -> tuple[dict, bool]:
+  """Return the object/membership record and whether it is hosted locally."""
+  if not _OID_RE.fullmatch(oid) or not _valid_host(host):
+    raise HTTPException(status_code=404, detail="No such image attachment.")
+  if host == _own_host():
+    obj = _load_object(oid)
+    if obj is None:
+      raise HTTPException(status_code=404, detail="No such object.")
+    _require_app_match(caller, obj["app"])
+    return obj, True
+  membership = _load_remote(host, oid)
+  if membership is None:
+    raise HTTPException(status_code=404, detail="Not a member of that object.")
+  _require_app_match(caller, membership["app"])
+  if write and membership.get("role") != "editor":
+    raise HTTPException(status_code=403, detail="This shared object is read-only.")
+  return membership, False
+
+
+async def _proxied_asset(host: str, oid: str, asset_id: str, kind: str, **fields) -> dict:
+  identity = _load_identity()
+  envelope = {
+    "v": 0,
+    "type": kind,
+    "from": _own_host(),
+    "to": host,
+    "sent_at": time.time(),
+    **fields,
+  }
+  envelope["sig"] = _sign(envelope, identity["private_key_b64"])
+  try:
+    response = await federation_request(
+      "POST",
+      f"{_peer_base_url(host)}/api/common/objects/{oid}/peer-asset/{asset_id}",
+      json=envelope,
+      max_response_bytes=MAX_ASSET_ENVELOPE_BYTES,
+      timeout_seconds=OUTBOUND_TIMEOUT_S,
+    )
+  except Exception as exc:
+    raise HTTPException(
+      status_code=502, detail="The object host could not be reached."
+    ) from exc
+  if response.status_code != 200:
+    detail = "The host refused the attachment request."
     try:
       detail = response.json().get("detail") or detail
     except Exception:
       pass
     raise HTTPException(status_code=response.status_code, detail=detail)
   return response.json()
+
+
+@router.get("/{host}/{oid}/assets/{asset_id}")
+async def read_asset(
+  host: str,
+  oid: str,
+  asset_id: str,
+  db: Session = Depends(get_db),
+  principal: Principal = Depends(get_principal),
+):
+  caller = _caller_app_slug(db, principal)
+  if not _ASSET_ID_RE.fullmatch(asset_id):
+    raise HTTPException(status_code=404, detail="No such image attachment.")
+  _record, local = _asset_access(host, oid, caller)
+  if local:
+    async with _object_lock(oid):
+      obj = _load_object(oid)
+      if obj is None:
+        raise HTTPException(status_code=404, detail="No such object.")
+      _require_app_match(caller, obj["app"])
+      return {"status": "ok", "asset": _asset_payload(oid, asset_id)}
+  return await _proxied_asset(host, oid, asset_id, "object_asset_read")
+
+
+@router.put("/{host}/{oid}/assets/{asset_id}")
+async def write_asset(
+  host: str,
+  oid: str,
+  asset_id: str,
+  body: WriteAsset,
+  db: Session = Depends(get_db),
+  principal: Principal = Depends(get_principal),
+):
+  require_nondelegated_owner_control(principal)
+  caller = _caller_app_slug(db, principal)
+  if not _ASSET_ID_RE.fullmatch(asset_id):
+    raise HTTPException(status_code=404, detail="No such image attachment.")
+  _record, local = _asset_access(host, oid, caller, write=True)
+  mime, data = _decode_asset(body.mime, body.data)
+  if local:
+    async with _object_lock(oid):
+      obj = _load_object(oid)
+      if obj is None:
+        raise HTTPException(status_code=404, detail="No such object.")
+      _require_app_match(caller, obj["app"])
+      _store_asset(oid, asset_id, mime, data)
+    return {"status": "ok", "size": len(data)}
+  return await _proxied_asset(
+    host, oid, asset_id, "object_asset_write", mime=mime,
+    data=base64.b64encode(data).decode(),
+  )
+
+
+@router.delete("/{host}/{oid}/assets/{asset_id}")
+async def delete_asset(
+  host: str,
+  oid: str,
+  asset_id: str,
+  db: Session = Depends(get_db),
+  principal: Principal = Depends(get_principal),
+):
+  require_nondelegated_owner_control(principal)
+  caller = _caller_app_slug(db, principal)
+  if not _ASSET_ID_RE.fullmatch(asset_id):
+    raise HTTPException(status_code=404, detail="No such image attachment.")
+  _record, local = _asset_access(host, oid, caller, write=True)
+  if local:
+    async with _object_lock(oid):
+      obj = _load_object(oid)
+      if obj is None:
+        raise HTTPException(status_code=404, detail="No such object.")
+      _require_app_match(caller, obj["app"])
+      _delete_asset(oid, asset_id)
+    return {"status": "deleted"}
+  return await _proxied_asset(host, oid, asset_id, "object_asset_delete")
