@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export default function useResume({ chatId, runId, send, onAccepted, onRefresh, blocked }) {
-  const [state, setState] = useState({ pending: false, error: '' })
+  const [state, setState] = useState({ pending: false, error: '', unavailable: !runId })
   const attemptRef = useRef(null)
   const scopeRef = useRef(null)
 
@@ -10,14 +10,17 @@ export default function useResume({ chatId, runId, send, onAccepted, onRefresh, 
     const scope = { chatId }
     scopeRef.current = scope
     attemptRef.current = null
-    setState({ pending: false, error: '' })
+    setState({ pending: false, error: '', unavailable: !runId })
     return () => { if (scopeRef.current === scope) scopeRef.current = null }
   }, [chatId, runId])
 
   const resume = useCallback(async () => {
     if (blocked?.() || attemptRef.current?.pending) return false
     if (!runId && !attemptRef.current) {
-      setState({ pending: false, error: 'Recovery details are not available yet. Try again once Möbius reconnects.' })
+      // A restart can briefly show a durable pause before its replacement run
+      // is readable. Refresh, but do not turn that expected handoff into an
+      // owner-facing error.
+      setState({ pending: false, error: '', unavailable: true })
       onRefresh()
       return false
     }
@@ -25,7 +28,7 @@ export default function useResume({ chatId, runId, send, onAccepted, onRefresh, 
     const attempt = attemptRef.current || { cid: crypto.randomUUID(), runId }
     attempt.pending = true
     attemptRef.current = attempt
-    setState({ pending: true, error: '' })
+    setState({ pending: true, error: '', unavailable: false })
     try {
       const result = await send('continue', undefined, {
         cid: attempt.cid,
@@ -37,7 +40,7 @@ export default function useResume({ chatId, runId, send, onAccepted, onRefresh, 
       // No optimistic continuation: only the server's accepted durable row
       // can supersede the recovery card or mark the turn as resumed.
       onAccepted(result)
-      setState({ pending: false, error: '' })
+      setState({ pending: false, error: '', unavailable: false })
       return true
     } catch (error) {
       if (scopeRef.current !== scope) return false
@@ -48,6 +51,7 @@ export default function useResume({ chatId, runId, send, onAccepted, onRefresh, 
           && !error?.outboxRetained) attemptRef.current = null
       setState({
         pending: false,
+        unavailable: false,
         error: error?.code === 'recovery_changed'
           ? 'Recovery state changed. Refreshing the chat…'
           : error?.code === 'pending_question_open'
