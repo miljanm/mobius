@@ -2963,6 +2963,25 @@ def test_successful_live_dependency_sync_survives_restart_not_new_container(
   assert pu.image_input_drift(platform) == ["backend/requirements.lock"]
 
 
+def test_image_input_drift_ignores_generated_files_but_keeps_local_source(
+  clone_env, monkeypatch,
+):
+  _, platform = clone_env
+  runtime = platform / "backend/runtime"
+  runtime.mkdir(parents=True)
+  baked = platform_activation.image_input_hashes(platform)
+  ignored = runtime / "__pycache__/broker.cpython-312.pyc"
+  ignored.parent.mkdir()
+  ignored.write_bytes(b"local bytecode")
+  local_source = runtime / "local.py"
+  local_source.write_text("VALUE = 'local'\n")
+
+  baked[str(ignored.relative_to(platform))] = "0" * 64
+  monkeypatch.setattr(pu, "_build_info", lambda: {"image_inputs": baked})
+
+  assert pu.image_input_drift(platform) == ["backend/runtime/local.py"]
+
+
 def test_failed_dependency_sync_invalidates_previous_success_receipt(
   clone_env, monkeypatch,
 ):
