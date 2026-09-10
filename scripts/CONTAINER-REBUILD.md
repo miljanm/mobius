@@ -77,23 +77,20 @@ The worker:
 
 1. checks Docker free space and pulls `ghcr.io/mobius-os/mobius:sha-<sha>`;
 2. verifies the image source, revision, and amd64 architecture;
-3. snapshots only the root-owned `/app/runtime` bytes already executing,
-   three-way merges any active local override onto the incoming official
-   runtime, and stops before draining chats if the two changed the same lines;
-4. returns `no_change` without disturbing chats if that image and prepared
-   runtime generation are already live;
-5. opens a root-owned one-boot cutover challenge, then asks the running worker
+3. returns `no_change` without disturbing chats if that exact image is already
+   live and its protected runtime comes directly from the image;
+4. opens a root-owned one-boot cutover challenge, then asks the running worker
    to close admission, park active turns, and bind them to that exact id;
-6. accepts the matching app intent without self-stopping, so Compose owns the
+5. accepts the matching app intent without self-stopping, so Compose owns the
    only stop and the authorization cannot be consumed by an intermediate boot;
-7. recreates only `app` from the frozen topology, mounts the prepared runtime
-   generation read-only, and verifies readiness, the exact served image
-   revision, and the exact mounted-runtime digest;
-8. explicitly re-arms the same root receipt for one rollback boot if the new
+6. recreates only `app` from the frozen topology and verifies readiness, the
+   exact served image revision, and that `/app/runtime` is the image's own
+   immutable protected code rather than a host-generated mount;
+7. explicitly re-arms the same root receipt for one rollback boot if the new
    container never becomes serviceable, then retires it after either healthy
    outcome; and
-9. retains only the active and last-good runtime generations, the current
-   helper-owned SHA tag, and one last-good image tag, without a host-wide prune.
+8. retains only the current helper-owned SHA tag and one last-good image tag,
+   without a host-wide prune.
 
 The canonical local `scripts/deploy-prod.sh` uses the same challenge → drain →
 accept contract when the image identity changes. A running image from before
@@ -130,28 +127,11 @@ capable. Once this succeeds, later Railway rebuilds use the normal managed
 challenge, drain, and receipt protocol.
 
 Ordinary local source remains in `/data/platform` and follows the normal merge
-reconciliation after boot. Protected runtime is deliberately narrower: the
-controller carries forward only bytes already active under the previous
-root-owned image boundary. Newer editable `backend/runtime` source remains
-pending and is never promoted to root code merely because an image was
-rebuilt. Dockerfile, dependency, bootstrap-script, and other local-only image
-inputs remain blockers because they have no equivalent active-generation
-receipt.
-
-## Resolving an active-runtime conflict
-
-A real overlap stops before chat drain and reports the exact paths. Resolve the
-file in a reviewed commit that contains the requested official target, then an
-operator may stage only those detected conflict files:
-
-```sh
-sudo /usr/local/libexec/mobius-rebuild-host stage-runtime-resolution \
-  <running-container-id> <official-target-sha> <reviewed-resolution-commit>
-```
-
-The root helper recomputes the conflict from the running `/app/runtime`, the
-two immutable Git histories, and the fixed persistent platform checkout. It
-accepts only the exact conflict path set, binds the staged files to the current
-runtime digest and official target, and does not mutate or restart the live
-container. A later Settings rebuild consumes the receipt only after the
-new container is healthy; a failed rebuild retains it for a safe retry.
+reconciliation after boot. Protected runtime is deliberately simpler:
+`/app/runtime` always comes verbatim from the reviewed image. Identity keys and
+linked state remain under persistent `/data/identity-broker`, but executable
+root code is never merged or carried forward. A local `backend/runtime` change
+therefore follows the same rule as a Dockerfile, dependency, or bootstrap
+change: it must be present in the exact reviewed image or replacement blocks
+before chat drain. A fork that intentionally changes privileged code deploys
+its own locally built image instead of overlaying an official one.
