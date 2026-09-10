@@ -5310,10 +5310,10 @@ export default function ChatView({
             && !goalWaitState.monitoring
         ? {
             actionKind: 'resume',
-            actionLabel: resumeState.pending ? 'Resuming…' : 'Resume',
-            actionDisabled: resumeState.pending || providerSwitching,
+            actionLabel: resumeState.pending ? 'Resuming…' : resumeState.unavailable ? 'Reconnecting…' : 'Resume',
+            actionDisabled: resumeState.pending || resumeState.unavailable || providerSwitching,
             actionError: resumeState.error,
-            actionAriaLabel: `${resumeState.pending ? 'Resuming' : 'Resume'} goal: ${visibleGoalObjective}`,
+            actionAriaLabel: `${resumeState.pending ? 'Resuming' : resumeState.unavailable ? 'Reconnecting' : 'Resume'} goal: ${visibleGoalObjective}`,
             actionIcon: <Play width={13} height={13} aria-hidden="true" />,
           }
         : {}),

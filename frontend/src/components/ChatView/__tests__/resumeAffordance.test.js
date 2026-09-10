@@ -120,6 +120,20 @@ test('MsgContent gates the Resume button on a resumable tail note', () => {
   )
 })
 
+test('restart recovery waits for a durable run identity instead of showing a false Resume', () => {
+  const resumeHook = readFileSync(new URL('../hooks/useResume.js', import.meta.url), 'utf8')
+  assert.match(resumeHook, /unavailable: !runId/,
+    'the resume state records when a restart has not published its replacement run')
+  assert.match(resumeHook, /onRefresh\(\)\s*\n\s*return false/,
+    'an unavailable recovery identity refreshes without an owner-facing failure')
+  assert.match(msgContent, /resumeState\?\.unavailable \? 'Reconnecting…'/,
+    'the interrupted-turn card explains the short restart handoff')
+  assert.match(msgContent, /resumeState\?\.pending \|\| resumeState\?\.unavailable/,
+    'the recovery action cannot be invoked before its identity is durable')
+  assert.match(chatView, /resumeState\.unavailable \? 'Reconnecting…' : 'Resume'/,
+    'the Goal rail follows the same unavailable-recovery contract')
+})
+
 test('MsgContent memo compares onResume so a stable ref skips re-render', () => {
   assert.match(msgContent, /prev\.onResume === next\.onResume/,
     'the memo comparator must include onResume')

@@ -440,13 +440,15 @@ function MsgContentInner({
                 type="button"
                 className="chat__resume chat__recovery-action"
                 onClick={onResume}
-                disabled={submissionBlocked || resumeState?.pending}
+                disabled={submissionBlocked || resumeState?.pending || resumeState?.unavailable}
                 aria-busy={resumeState?.pending || undefined}
                 title={submissionBlocked
                   ? 'Wait for the provider switch to finish.'
+                  : resumeState?.unavailable
+                    ? 'Möbius is reconnecting this paused turn.'
                   : undefined}
               >
-                {resumeState?.pending ? 'Resuming…' : parked
+                {resumeState?.pending ? 'Resuming…' : resumeState?.unavailable ? 'Reconnecting…' : parked
                   ? limitResetElapsed ? 'Continue now' : 'Try now'
                   : 'Resume'}
               </button>

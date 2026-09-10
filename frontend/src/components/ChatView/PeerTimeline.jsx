@@ -2,10 +2,11 @@
 import { useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { api, jsonOrThrow } from '../../api/client.js'
-import HelperResultCard from './HelperResultCard.jsx'
+import HelperResultCard, { HelperResultGroupCard } from './HelperResultCard.jsx'
 import PeerMessageCard from './PeerMessageCard.jsx'
 import { projectChatActivity } from './chatActivity.js'
 import { chatActivityQueryKey } from './chatActivityQueries.js'
+import { groupHelperResultRows } from './helperResultGrouping.js'
 import { peerRecordTool, peerTime, foldPeerActivity } from './peerTimeline.js'
 
 export function usePeerTimeline(chatId, messages, enabled, activeTools, activeMirrorIndex = -1) {
@@ -30,11 +31,20 @@ export function usePeerTimeline(chatId, messages, enabled, activeTools, activeMi
 }
 
 export function PeerTimelineRows({ notes, chatId, onInternalNav }) {
-  return notes?.map(note => <li key={note.activityId || `peer-${note.id}`} className="chat__msg chat__msg--assistant chat__msg--peer" data-peer-id={note.type === 'peer_message' ? note.id : undefined} data-activity-id={note.activityId} data-key={note.activityId || `peer-${note.id}`} tabIndex={-1}>
+  return groupHelperResultRows(notes).map(group => {
+    const groupedHelpers = group.length > 1 && group.every(note => note.type === 'helper_result')
+    const key = groupedHelpers
+      ? `helper-results:${group.map(note => note.activityId || note.id).join(',')}`
+      : group[0].activityId || `peer-${group[0].id}`
+    const note = group[0]
+    return <li key={key} className="chat__msg chat__msg--assistant chat__msg--peer" data-peer-id={note.type === 'peer_message' ? note.id : undefined} data-activity-id={groupedHelpers ? undefined : note.activityId} data-key={key} tabIndex={-1}>
     <div className="chat__tools">
-      {note.type === 'helper_result'
+      {groupedHelpers
+        ? <HelperResultGroupCard events={group} chatId={chatId} onInternalNav={onInternalNav} />
+        : note.type === 'helper_result'
         ? <HelperResultCard event={note} chatId={chatId} onInternalNav={onInternalNav} />
         : <PeerMessageCard onInternalNav={onInternalNav} t={peerRecordTool(note, chatId)} chatId={chatId} disclosureKey={`peer-${note.id}`} records={[note]} />}
     </div>
-  </li>)
+  </li>
+  })
 }
