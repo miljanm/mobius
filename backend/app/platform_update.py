@@ -1084,11 +1084,10 @@ def container_replacement_blockers(
   remove that runtime addition, so the owner action must fail closed before
   cutover.
 
-  Protected runtime (``backend/runtime``) is never a blocker here: the
-  replacement controller's active-runtime overlay contract owns that case at
-  the root boundary, carrying forward only bytes already executing from
-  ``/app/runtime`` and never promoting newer editable source. Other image
-  inputs have no equivalent active-generation receipt.
+  Protected runtime (``backend/runtime``) follows the same rule as every other
+  image input. Privileged code comes only from the reviewed image; a local
+  protected-runtime change must therefore be upstream in that exact target or
+  block replacement before chat drain.
   """
   marker = _read_activation_marker()
   covered = set(marker["image_paths"]) if marker else set()
@@ -1121,8 +1120,6 @@ def container_replacement_blockers(
 
   image_pending: list[str] = []
   for path in sorted(set(pending)):
-    if path == "backend/runtime" or path.startswith("backend/runtime/"):
-      continue
     impact = platform_activation.classify_activation(
       [path], deployment="self_hosted",
     )

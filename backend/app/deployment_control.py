@@ -74,11 +74,10 @@ _KNOWN_STATES = {
 }
 _ACTIVE_STATES = {"queued", "preparing", "replacing", "verifying"}
 _HANDOFF_VERSION = "external-cutover-v1"
-_RUNTIME_OVERLAY_VERSION = "active-runtime-v1"
 _MANAGED_USER_AGENT = "mobius-managed-deployment/1"
 _managed_recovery_tasks: set[asyncio.Task[None]] = set()
 _UPGRADE_MESSAGE = (
-  "The Host replacement helper predates safe active-runtime carry-forward. Re-run "
+  "The Host replacement helper predates safe external chat handoff. Re-run "
   "scripts/install-rebuild-helper.sh from the current trusted checkout."
 )
 
@@ -426,16 +425,12 @@ def _read_host_status() -> dict[str, Any]:
         "expected_sha": expected,
         "message": "Container rebuild queued.",
         "handoff": value.get("handoff"),
-        "runtime_overlay": value.get("runtime_overlay"),
       }
   return value
 
 
 def _current_handoff(raw: dict[str, Any]) -> bool:
-  return (
-    raw.get("handoff") == _HANDOFF_VERSION
-    and raw.get("runtime_overlay") == _RUNTIME_OVERLAY_VERSION
-  )
+  return raw.get("handoff") == _HANDOFF_VERSION
 
 
 def _write_request(expected_sha: str) -> None:

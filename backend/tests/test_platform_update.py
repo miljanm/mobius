@@ -1767,7 +1767,7 @@ def test_container_replacement_accepts_image_input_covered_by_upstream(
   assert pu.container_replacement_blockers() == []
 
 
-def test_active_runtime_overlay_owns_protected_runtime_blockers(
+def test_protected_runtime_is_an_image_replacement_blocker(
   tmp_path, monkeypatch,
 ):
   marker = tmp_path / "activation.json"
@@ -1779,7 +1779,9 @@ def test_active_runtime_overlay_owns_protected_runtime_blockers(
     image_paths=[],
   )
 
-  assert pu.container_replacement_blockers() == ["Dockerfile"]
+  assert pu.container_replacement_blockers() == [
+    "Dockerfile", "backend/runtime/identity_broker.py",
+  ]
 
 
 def test_stale_protected_runtime_restores_image_activation_without_marker(
@@ -1808,7 +1810,7 @@ def test_stale_protected_runtime_restores_image_activation_without_marker(
   }]
 
 
-def test_replacement_leaves_local_runtime_drift_to_the_active_runtime_overlay(
+def test_replacement_blocks_local_runtime_drift(
   clone_env,
 ):
   _, platform = clone_env
@@ -1818,7 +1820,9 @@ def test_replacement_leaves_local_runtime_drift_to_the_active_runtime_overlay(
     edits={"backend/runtime/identity_broker.py": "local-only\n"},
   )
 
-  assert pu.container_replacement_blockers(official, platform) == []
+  assert pu.container_replacement_blockers(official, platform) == [
+    "backend/runtime/identity_broker.py",
+  ]
 
 
 def test_replacement_blocks_unmarked_local_image_input_drift(clone_env):
