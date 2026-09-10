@@ -1350,12 +1350,28 @@ def image_input_drift(repo: Path = PLATFORM_REPO) -> list[str] | None:
     current = platform_activation.image_input_hashes(repo)
   except OSError:
     return None
+  # The image build can leave generated output inside broad baked-runtime
+  # prefixes (for example frontend assets and Python bytecode).  Those files
+  # are not authored source and may differ from the live checkout even when
+  # its Git state is clean.  Compare tracked files plus intentionally
+  # unignored local additions; ignored build output must not manufacture a
+  # permanent image-rebuild warning.  A Git failure keeps the older
+  # fail-closed comparison rather than hiding possible source drift.
+  authored = _git(
+    "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+    repo=repo, check=False,
+  )
+  candidates = set(baked) | set(current)
+  if authored.returncode == 0:
+    candidates &= {
+      path for path in authored.stdout.split("\0") if path
+    }
   # Successful in-place installs replace the image baseline only for the
   # exact dependency input bytes they installed. A later edit becomes pending
   # again, while restarting the server does not resurrect completed work.
   installed = _dependency_receipt()
   return sorted(
-    path for path in set(baked) | set(current)
+    path for path in candidates
     if installed.get(path, baked.get(path)) != current.get(path)
   )
 
