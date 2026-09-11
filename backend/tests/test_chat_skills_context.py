@@ -231,10 +231,22 @@ def test_goal_waits_always_name_a_durable_owner_interaction():
   assert "create exactly one owning interaction" in planning_normalized
   assert "keeps the Goal marked **Waiting for you**" in planning_normalized
   assert "Do not end with “tell me when…”" in planning_normalized
-  assert "durable owner holds it" in waiting_normalized
+  assert "# Waiting visibly — durable monitors or explicit owner actions" in waiting
   assert "`--owner` is required for command waits" in waiting_normalized
   assert "exit **0 exactly when the condition is met**" in waiting_normalized
   assert "A wait declared inside a Goal resumes under the same Goal" in waiting_normalized
+
+
+def test_core_requires_one_claim_for_convergent_cross_chat_work():
+  repo = Path(__file__).resolve().parents[2]
+  core = " ".join((repo / "skill" / "core.md").read_text(
+    encoding="utf-8",
+  ).split())
+
+  assert "**Claim convergent work once.**" in core
+  assert "The first atomic claimant owns it" in core
+  assert "must not duplicate its approval, mutation, or monitor" in core
+  assert "Claims coordinate agents; they never grant the owner's authority" in core
 
 
 def test_core_prompt_distinguishes_durable_delegation_and_owner_led_contribution():
@@ -259,18 +271,17 @@ def test_restart_guidance_requires_activation_proof_and_fresh_approval():
   normalized_core = " ".join(core.split())
   normalized_maintenance = " ".join(maintenance.split())
 
-  assert "**Server restarts**: ALWAYS ask" in core
+  assert "**Server restarts**: ALWAYS publish the exact platform-owned" in core
   assert "If no changed runtime owner requires a restart, do not offer one" in (
     normalized_core
   )
-  assert "ALWAYS ask through Möbius's `request_approval` tool for the exact restart" in (
+  assert "`request_restart` card after the `platform-maintenance` activation preflight" in (
     normalized_core
   )
-  assert "End the turn after its saved receipt and act only" in normalized_core
-  assert "on the owner's explicit **Restart now** answer in the continuation" in (
-    normalized_core
-  )
-  assert "authorizes one restart call only" in normalized_core
+  assert "End the turn after its saved receipt" in normalized_core
+  assert "The owner's explicit **Restart now** selection authorizes" in normalized_core
+  assert "one platform dispatch; agents never replay that command" in normalized_core
+  assert "Task approval or delegation is not restart approval" in normalized_core
   assert "## Choose the smallest activation action" in maintenance
   assert "No shell rebuild or server restart" in maintenance
   assert "No server restart" in maintenance
@@ -294,13 +305,13 @@ def test_restart_guidance_requires_activation_proof_and_fresh_approval():
     normalized_maintenance
   )
   assert "Its receipt confirms only that the card was saved" in normalized_maintenance
-  assert "It does not grant approval: end the turn" in normalized_maintenance
-  assert "let the owner's answer resume the chat" in normalized_maintenance
-  assert (
-    "A **Restart now** answer authorizes exactly one safe restart call"
-    in maintenance
+  assert "not approval: end the turn with no further text or tools" in (
+    normalized_maintenance
   )
-  assert "A second restart" in maintenance
+  assert "The owner's **Restart now** click is dispatched by the platform" in (
+    normalized_maintenance
+  )
+  assert "Do not use `request_approval`" in maintenance
   assert "service may be unavailable for tens of seconds" in normalized_maintenance
   assert "delegation of the complete backend-fix loop does not approve" in (
     normalized_maintenance
@@ -438,6 +449,8 @@ def test_agent_coaching_is_the_single_neutral_coaching_skill():
   assert "`/data/shared/skills/agent-coaching.md` completely" in reflection
   assert "what should Reflection itself change" in reflection
   assert "/data/platform/backend/scripts/reflection-evidence.py" in reflection
+  assert "same-provider transcript reseed" not in reflection
+  assert "exact-session coaching was unavailable" in reflection
 
 
 def test_image_skill_returns_tool_result_without_touching_protected_storage():

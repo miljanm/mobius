@@ -125,7 +125,6 @@ umask 077
 install -d -m 0700 /etc/mobius-rebuild /var/lib/mobius-rebuild
 install -D -m 0755 "$ROOT/scripts/mobius-rebuild-host.py" \
   /usr/local/libexec/mobius-rebuild-host
-/usr/local/libexec/mobius-rebuild-host bootstrap-runtime "$CID"
 SNAPSHOT=$(mktemp /etc/mobius-rebuild/compose.XXXXXX)
 if [[ -n $FROZEN_SOURCE ]]; then
   cp "$FROZEN_SOURCE" "$SNAPSHOT"
@@ -139,11 +138,6 @@ cat >/etc/mobius-rebuild/image.override.yml <<'EOF'
 services:
   app:
     image: ${MOBIUS_IMAGE:?MOBIUS_IMAGE is required}
-    volumes:
-      - type: bind
-        source: ${MOBIUS_RUNTIME_OVERLAY:?MOBIUS_RUNTIME_OVERLAY is required}
-        target: /app/runtime
-        read_only: true
 EOF
 chmod 0600 /etc/mobius-rebuild/image.override.yml
 python3 - "$PROJECT" "$DATA_SOURCE" <<'PY'

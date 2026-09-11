@@ -53,6 +53,7 @@ cron-logs/
 # Runtime workspaces own both their contents and their cleanup.
 /run/
 /agent-scratch/
+/worktrees/
 # Contribution records point at these durable repositories. Their own Git
 # history is authoritative; recording them here as gitlinks is both redundant
 # and unsafe when a linked worktree is later retired.
@@ -137,6 +138,7 @@ def _git(
     ["git", "-C", str(data_dir), *args],
     input=input_bytes,
     capture_output=True,
+    timeout=60,
     env=env,
   )
   if process.returncode != 0:

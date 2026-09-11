@@ -873,6 +873,26 @@ def test_question_event_creates_block():
   assert blocks == [{"type": "question", "questions": questions}]
 
 
+def test_approval_question_preserves_exact_action_identity():
+  blocks = []
+  questions = [{"question": "Restart?", "options": []}]
+  process_event({
+    "type": "question",
+    "question_id": "approval-1",
+    "response_mode": "continuation",
+    "action_key": "platform:abc123:restart",
+    "questions": questions,
+  }, blocks)
+
+  assert blocks == [{
+    "type": "question",
+    "questions": questions,
+    "action_key": "platform:abc123:restart",
+    "response_mode": "continuation",
+    "question_id": "approval-1",
+  }]
+
+
 def test_question_coalesces_partial_then_full():
   """Partial question followed by full question replaces, not appends."""
   blocks = []
@@ -1162,6 +1182,31 @@ def test_text_boundary_reducer_splits_consecutive_text():
   assert [b["content"] for b in text_blocks] == ["answer1", "answer2"]
   # the marker was consumed (replaced by the second text), not left behind
   assert all(b.get("type") != "text_boundary" for b in blocks)
+
+
+def test_replacement_boundary_discards_only_the_abandoned_text_item():
+  blocks = []
+  process_event({
+    "type": "text", "content": "settled", "text_item_id": "msg-1",
+  }, blocks)
+  process_event({"type": "text_boundary"}, blocks)
+  process_event({
+    "type": "text", "content": "abandoned partial",
+    "text_item_id": "msg-2",
+  }, blocks)
+
+  changed = process_event({
+    "type": "text_boundary", "replace_text_item_id": "msg-2",
+  }, blocks)
+  process_event({
+    "type": "text", "content": "replacement", "text_item_id": "msg-3",
+  }, blocks)
+
+  assert changed is True
+  assert [
+    (block["content"], block.get("text_item_id"))
+    for block in blocks if block.get("type") == "text"
+  ] == [("settled", "msg-1"), ("replacement", "msg-3")]
 
 
 def test_text_boundary_on_empty_is_noop():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 
 from fastapi.responses import JSONResponse
@@ -80,9 +81,9 @@ def _authorization_context(client, owner_token, db, tmp_path):
   )
   top_level_token = auth_mod.create_agent_token(
     chat_ids["top-level"],
-    "destructive-control-top-run",
     owner.username,
     owner.token_epoch,
+    run_id="destructive-control-top-run",
   )
   app_token = auth_mod.create_access_token({
     "sub": owner.username,
@@ -204,6 +205,7 @@ def test_real_delegated_bearer_is_rejected_across_owner_control_surface(
     ("POST", "/api/common/reply", {"post_id": "invalid", "text": "Reply"}, None),
     ("POST", "/api/common/groups", {"name": "", "members": []}, None),
     ("POST", "/api/common/groups/invalid/send", {"text": "Hello"}, None),
+    ("DELETE", "/api/common/groups/invalid", None, None),
     (
       "POST",
       "/api/common/groups/invalid/members",
@@ -412,20 +414,12 @@ def test_owner_top_level_and_app_principals_keep_common_object_controls(
         "doc": {"value": "remote"},
       }
 
-  class FakeAsyncClient:
-    def __init__(self, *_args, **_kwargs):
-      pass
+  async def fake_federation_request(*_args, **_kwargs):
+    return FakeResponse()
 
-    async def __aenter__(self):
-      return self
-
-    async def __aexit__(self, *_args):
-      return False
-
-    async def post(self, *_args, **_kwargs):
-      return FakeResponse()
-
-  monkeypatch.setattr(object_routes.httpx, "AsyncClient", FakeAsyncClient)
+  monkeypatch.setattr(
+    object_routes, "federation_request", fake_federation_request,
+  )
 
   app_created = client.post(
     "/api/common/objects",
@@ -470,7 +464,7 @@ def test_owner_top_level_and_app_principals_keep_common_object_controls(
     headers=context["app"],
   )
   assert declined.status_code == 200, declined.text
-  assert not invitation_path.exists()
+  assert json.loads(invitation_path.read_text())["status"] == "declined"
 
   joined = client.post(
     "/api/common/objects/join",
